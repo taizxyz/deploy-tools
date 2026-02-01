@@ -1,68 +1,58 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ScriptUrl = "https://raw.githubusercontent.com/taizxyz/deploy-tools/main/DeployPackages.ps1"
+$Self = "https://raw.githubusercontent.com/taizxyz/deploy-tools/main/DeployPackages.ps1"
 
-function IsAdmin {
-    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $p  = New-Object Security.Principal.WindowsPrincipal($id)
-    $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
+$admin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-function RelaunchAsAdmin {
-    if (IsAdmin) { return }
-
+if (-not $admin) {
     Start-Process powershell -Verb RunAs -ArgumentList @(
         "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-Command", "irm $ScriptUrl | iex"
+        "-ExecutionPolicy Bypass",
+        "-Command irm $Self | iex"
     )
-
     exit
 }
 
-function HasWinget {
-    Get-Command winget -ErrorAction SilentlyContinue | Out-Null
+$Winget = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
+if (-not $Winget) {
+    $Winget = "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe"
+}
+if (-not (Test-Path $Winget)) {
+    throw "winget not found (install App Installer from Microsoft Store)"
 }
 
-function IsInstalled($Id) {
-    $out = winget list --id $Id -e 2>&1 | Out-String
-    -not ($out -match "No installed package found")
+function Installed($id) {
+    & $Winget list --id $id -e 2>&1 | Select-String $id | Out-Null
+    return ($LASTEXITCODE -eq 0)
 }
 
-function InstallApp($Id) {
-    if (IsInstalled $Id) {
-        Write-Host "$Id already installed."
+function Install($id) {
+    if (Installed $id) {
+        Write-Host "$id already installed"
         return
     }
 
-    Write-Host "Installing $Id (silent)..."
-    winget install --id $Id -e `
+    Write-Host "Installing $id (silent)..."
+    & $Winget install --id $id -e `
         --silent `
         --accept-package-agreements `
         --accept-source-agreements
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Silent install failed, retrying interactive..." -ForegroundColor Yellow
-
-        winget install --id $Id -e `
+        Write-Host "Silent failed, retrying normal..." -ForegroundColor Yellow
+        & $Winget install --id $id -e `
             --accept-package-agreements `
             --accept-source-agreements
 
         if ($LASTEXITCODE -ne 0) {
-            throw "Install failed for $Id"
+            throw "Install failed: $id"
         }
     }
 
-    Write-Host "$Id installed."
-}
-
-# ---- main ----
-
-RelaunchAsAdmin
-
-if (-not (HasWinget)) {
-    throw "winget not found"
+    Write-Host "$id installed"
 }
 
 Start-Process "ms-settings:windowsupdate" | Out-Null
@@ -77,15 +67,9 @@ $apps = @(
 $ok = 0
 $fail = 0
 
-foreach ($app in $apps) {
-    try {
-        InstallApp $app
-        $ok++
-    }
-    catch {
-        Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
-        $fail++
-    }
+foreach ($a in $apps) {
+    try { Install $a; $ok++ }
+    catch { Write-Host $_ -ForegroundColor Red; $fail++ }
 }
 
 Write-Host ""
