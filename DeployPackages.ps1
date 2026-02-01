@@ -4,67 +4,76 @@ $ErrorActionPreference = "Stop"
 $ScriptUrl = "https://raw.githubusercontent.com/taizxyz/deploy-tools/main/DeployPackages.ps1"
 
 function CheckAdmin {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p  = New-Object Security.Principal.WindowsPrincipal($id)
+    $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 function ElevateIfNeeded {
     if (CheckAdmin) { return }
-    $params = @(
+
+    $args = @(
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-WindowStyle", "Hidden",
         "-Command", "irm $ScriptUrl | iex"
     )
-    $proc = Start-Process powershell -Verb RunAs -ArgumentList $params -PassThru
+
+    $proc = Start-Process "powershell" -Verb RunAs -ArgumentList $args -PassThru
     $proc.WaitForExit()
+
     if ($proc.ExitCode -ne 0) {
-        throw "Failed to elevate to admin (exit code $($proc.ExitCode))."
+        throw "Elevation failed (exit code $($proc.ExitCode))."
     }
     exit
 }
 
 function OpenWindowsUpdate {
-    Start-Process "ms-settings:windowsupdate"
+    Start-Process "ms-settings:windowsupdate" | Out-Null
 }
 
 function CheckWinget {
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        throw "winget not found, make sure App Installer is installed."
+        throw "winget not found."
     }
 }
 
 function IsInstalled([string]$Id) {
-    $out = winget list --id $Id -e 2>&1
-    return ($LASTEXITCODE -eq 0 -and ($out -match [regex]::Escape($Id)))
+    $out = (winget list --id $Id -e 2>&1 | Out-String)
+    if ($out -match "No installed package found") { return $false }
+    return ($out -match [regex]::Escape($Id))
 }
 
 function InstallApp([string]$Id) {
     if (IsInstalled $Id) {
-        Write-Host "$Id is already installed."
+        Write-Host "$Id already installed."
         return
     }
 
+    $logDir = Join-Path $env:TEMP "deploy-tools-logs"
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    $log = Join-Path $logDir "$Id.log"
+
     Write-Host "Installing $Id..."
+
     winget install --id $Id -e `
         --silent --disable-interactivity `
         --accept-source-agreements --accept-package-agreements `
-        --scope machine `
-        --force
-    $exitCode = $LASTEXITCODE
+        --verbose-logs --log $log
 
-    if ($exitCode -ne 0) {
-        throw "Failed to install $Id (exit code $exitCode)."
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+        throw "Install failed for $Id (exit $code). Log: $log"
     }
-    Write-Host "$Id installed successfully."
+
+    Write-Host "$Id installed."
 }
 
 ElevateIfNeeded
 OpenWindowsUpdate
 CheckWinget
 
-winget source reset --force
+winget source reset --force | Out-Null
 
 $apps = @(
     "Google.Chrome",
@@ -82,10 +91,10 @@ foreach ($app in $apps) {
         $ok++
     }
     catch {
-        Write-Host "ERROR: $_" -ForegroundColor Red
+        Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
         $failed++
     }
 }
 
 Write-Host ""
-Write-Host "Done — $ok succeeded, $failed failed."
+Write-Host "Done: $ok ok, $failed failed."
