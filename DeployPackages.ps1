@@ -64,6 +64,8 @@ ElevateIfNeeded
 OpenWindowsUpdate
 CheckWinget
 
+winget source reset --force
+
 $apps = @(
     "Google.Chrome",
     "Adobe.Acrobat.Reader.64-bit",
